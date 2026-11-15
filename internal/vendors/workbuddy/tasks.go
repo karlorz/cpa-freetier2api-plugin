@@ -1086,6 +1086,27 @@ func (c *Client) postReport(ctx context.Context, cred *Credential, url string, e
 // 这一条上报同时点亮 growth 连登与解锁 first_buddy 任务，
 // 因此是领养与连登体系的前置条件。
 func (c *Client) ReportChatActivity(ctx context.Context, cred *Credential, conversationID, requestID, modelID, modelName string) error {
+	return c.ReportBillingEvents(ctx, cred, []map[string]any{
+		billingChatRequestSendEvent(cred, conversationID, requestID, modelID, modelName),
+	})
+}
+
+// 计费域 /v2/report 的默认模型。必须是当前仍在国际版模型清单里的 id：
+// 已下线的 deepseek-v4-flash 会让事件被 400/10001「format validation」整条丢掉。
+const (
+	defaultReportModelID   = "deepseek-v4.1-flash"
+	defaultReportModelName = "DeepSeek V4.1 Flash"
+)
+
+// billingChatRequestSendEvent 构造计费域 chat_request_send 事件。
+//
+// 计费域 /v2/report 与桌面 ChatBase /v2/report 不是同一套 schema：
+//   - 桌面事件的 knowledgeId/knowledgeName 是空字符串（官方桌面抓包）；
+//   - 计费域要求这两个字段是数组，写成字符串会 400 code 10001
+//     「all 1 events rejected by format validation」。
+// 布尔/数值零值字段也必须在，缺字段同样会触发 format validation。
+// userId 缺失时上游 200 但静默丢弃，不计分。
+func billingChatRequestSendEvent(cred *Credential, conversationID, requestID, modelID, modelName string) map[string]any {
 	if strings.TrimSpace(requestID) == "" {
 		requestID = conversationID
 	}
@@ -1096,7 +1117,7 @@ func (c *Client) ReportChatActivity(ctx context.Context, cred *Credential, conve
 		modelName = defaultReportModelName
 	}
 	now := nowMs()
-	event := map[string]any{
+	return map[string]any{
 		"eventCode": "chat_request_send", "timestamp": now, "reportDelay": 0,
 		"mode": "craft", "conversationId": conversationID, "requestId": requestID,
 		"inputLength":      12,
@@ -1105,24 +1126,16 @@ func (c *Client) ReportChatActivity(ctx context.Context, cred *Credential, conve
 		"isPlan":           false, "isAutoExecuteTerminal": false, "isAutoModify": false,
 		"codebaseEnable": false,
 		"maxToken":       0, "maxSteps": 0, "temperature": 0, "maxRetries": 0,
-		"mentionContexts": []any{}, "knowledgeId": knowledgeIDEmpty, "knowledgeName": knowledgeNameEmpty,
+		"mentionContexts": []any{}, "knowledgeId": []any{}, "knowledgeName": []any{},
 		"codebaseId": "", "mentionContextCount": 0, "command": "",
 		"expertId": "", "recommendId": "", "skillId": "", "skillCount": 0,
 		"totalCount": 0, "fileUri": "", "presentAt": now,
 		"traceId": requestID, "rootRequestId": requestID,
 		"parentConversationId": conversationID,
 		"agentName":            "default", "agentType": "conversation",
-		// userId 缺失会让服务端静默丢弃这条事件。
-		"userId": cred.UIDValue(),
+		"userId":               cred.UIDValue(),
 	}
-	return c.ReportBillingEvents(ctx, cred, []map[string]any{event})
 }
-
-// 上报默认模型（上游对活跃上报不强校验模型，用通用值即可）。
-const (
-	defaultReportModelID   = "deepseek-v4-flash"
-	defaultReportModelName = "DeepSeek V4 Flash"
-)
 
 // ReportWebElementClick 上报一次 web 元素点击（Library_read 等任务）。
 func (c *Client) ReportWebElementClick(ctx context.Context, cred *Credential, pageURL, elementID, elementName string) error {
@@ -1139,12 +1152,10 @@ func (c *Client) ReportWebElementClick(ctx context.Context, cred *Credential, pa
 	return c.ReportWebEvents(ctx, cred, pageURL, []map[string]any{event})
 }
 
-// chat_request_send 事件里「未挂知识库」的标准形态。
+// chat_request_send 桌面事件里「未挂知识库」的标准形态（空字符串）。
 //
-// 官方客户端抓包一律是空字符串（credential.go 的三条事件序列就是这么来的）；
-// 每日活跃信标最初手写成空数组，于是同一个 eventCode 出现了两种类型。上游目前
-// 两种都收，但任何一次 schema 收紧都只会打断其中一条路径，所以统一到抓包形态，
-// 并集中在这里，避免四处再各自分叉。
+// 只给 ChatBase 桌面指纹族用（credential.go 的对话序列）。计费域 /v2/report
+// 的 knowledgeId/knowledgeName 必须是数组，见 billingChatRequestSendEvent。
 const (
 	knowledgeIDEmpty   = ""
 	knowledgeNameEmpty = ""
@@ -2144,31 +2155,13 @@ func parseGrowthHeatmap(data json.RawMessage) (growthHeatmapCell, []string, erro
 
 // DailyBonusBeaconEvent 构造一条每日活跃信标（chat_request_send）。
 //
-// 字段形态镜像官方客户端的对话上报：conversationId/requestId 用一次性
-// 随机值，让每天看起来都是新会话而非重放；userId 必须带，缺失时上游
-// 返回 200 但静默丢弃事件。单测锁字段名——写错一个就是静默不计分。
+// 走计费域 /v2/report，字段必须与 ReportChatActivity 同一套 schema。
+// conversationId 用官方 5.8.4 的带连字符 UUIDv7，而不是 wb-daily- 前缀：
+// 固定插件前缀是自动化特征，上游对新账号会按 format validation 整条丢掉。
+// 每天现生成，避免看起来像重放。
 func DailyBonusBeaconEvent(credential *Credential) map[string]any {
-	now := nowMs()
-	conversationID := "wb-daily-" + randomHexForExport(8)
-	return map[string]any{
-		"eventCode":            "chat_request_send",
-		"timestamp":            now,
-		"mode":                 "craft",
-		"conversationId":       conversationID,
-		"requestId":            conversationID,
-		"inputLength":          12,
-		"requestModelId":       "deepseek-v4-flash",
-		"requestModelName":     "DeepSeek V4 Flash",
-		"mentionContexts":      []any{},
-		"knowledgeId":          knowledgeIDEmpty,
-		"knowledgeName":        knowledgeNameEmpty,
-		"presentAt":            now,
-		"rootRequestId":        conversationID,
-		"parentConversationId": conversationID,
-		"agentName":            "default",
-		"agentType":            "conversation",
-		"userId":               credential.UIDValue(),
-	}
+	conversationID := NewUUIDv7()
+	return billingChatRequestSendEvent(credential, conversationID, conversationID, "", "")
 }
 
 // SendDailyBonusBeacon 上报一条每日活跃信标（计费域 /v2/report）。
