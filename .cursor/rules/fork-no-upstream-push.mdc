@@ -1,0 +1,24 @@
+---
+description: karlorz fork of freetier2api — push origin only, never Likhixang or plugin-store
+alwaysApply: true
+---
+
+# freetier2api is a karlorz fork of Likhixang v0.1.49
+
+Checkout: `/Users/karlchow/Desktop/code/cpa-freetier2api-plugin`
+Origin: https://github.com/karlorz/cpa-freetier2api-plugin
+Upstream: https://github.com/Likhixang/cpa-freetier2api-plugin
+
+## Do
+
+- Keep the WorkBuddy `/v2/report` 10001 patch on top of `v0.1.49`
+- `git push origin` when the operator wants the fork updated
+- Overlay-deploy on kr01: backup `.so`, copy onto `freetier2api-v0.1.49.so`, `systemctl --user restart cliproxyapi`
+- Read `docs/FORK.md`
+
+## Do not
+
+- `git push upstream` or open a public PR to Likhixang unless asked
+- GitHub Release or plugin-store publish
+
+Live overlay sha256 prefix: `12fff03b76a12789`.

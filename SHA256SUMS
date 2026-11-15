@@ -1,0 +1,2 @@
+# Live kr01 overlay (filename still v0.1.49). dist/*.so is gitignored; this file records the hash.
+12fff03b76a12789f53017a5818b4c8998bd46b9de822fd80c8e2b78ce325759  dist/freetier2api.so
